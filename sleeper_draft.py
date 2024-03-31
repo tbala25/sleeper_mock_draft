@@ -1,6 +1,8 @@
 import requests
 import requests_cache
 import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
 
 requests_cache.install_cache('sleeper', expire_after=43200) #12 hour cache
 
@@ -65,7 +67,7 @@ def get_draft_picks(league_id):
 
 
 
-def fetch_league_users_and_rosters(league_id):
+def fetch_league_users(league_id):
     """Fetch league users and rosters and return a DataFrame with the mapping."""
     # Endpoints for league users and rosters
     users_url = f"https://api.sleeper.app/v1/league/{league_id}/users"
@@ -130,7 +132,7 @@ def fetch_players_details_and_adp():
     players_details = fetch_players_details()  # Fetch player details as before
 
     # Standardize player names in the ADP DataFrame for better matching
-    adp_df['Player'] = adp_df['PLAYER NAME'].apply(standardize_name)
+    adp_df['player'] = adp_df['PLAYER NAME'].apply(standardize_name)
 
     # Convert ADP DataFrame to a dict for easy lookup by standardized player name
     adp_dict = pd.Series(adp_df['AVG.'].values, index=adp_df.Player).to_dict()
@@ -173,10 +175,63 @@ def calculate_combined_scores(df):
 
     return pd.DataFrame(scores_list)
 
+def get_positions_to_improve(players_df):
+    """
+    Calculates and updates positions teams need to improve based on starter and depth scores
+    relative to league averages. Returns a DataFrame indicating which positions need improvement
+    for each team.
+
+    :param players_df: DataFrame containing player details including team assignments.
+    :return: DataFrame indicating positions to improve for each team.
+    """
+    # Step 1: Calculate scores for each position on each team
+    combined_scores_df = calculate_combined_scores(players_df)
+
+    # Step 2: Calculate league averages for starter and depth scores by position
+    league_pos_avg = combined_scores_df.groupby('position')[['starter_score', 'depth_score']].median().reset_index()
+
+    # Step 3: Merge team scores with league averages to compare
+    comparison_df = pd.merge(combined_scores_df, league_pos_avg, on='position', suffixes=('_team', '_league'))
+
+    # Step 4: Identify positions where each team's scores are below the league average
+    comparison_df['improve_starter'] = comparison_df['starter_score_team'] > comparison_df['starter_score_league']
+    comparison_df['improve_depth'] = comparison_df['depth_score_team'] > comparison_df['depth_score_league']
+
+    # Filter to positions that need improvement
+    positions_to_improve = comparison_df[(comparison_df['improve_starter']) | (comparison_df['improve_depth'])]
+
+    # Step 5: Get team scores
+    # Step 2: Calculate league averages for starter and depth scores by position
+    league_team_avg = combined_scores_df.groupby('username')[['starter_score', 'depth_score']].median().reset_index()
+
+    return positions_to_improve, league_team_avg
+
+
+def find_best_available(draftable_players, user_needs, pick_number):
+    # Sort user needs by the gap to prioritize higher gaps
+    user_needs_sorted = user_needs.sort_values(by='gap', ascending=False)
+
+    for _, need_row in user_needs_sorted.iterrows():
+        position = need_row['position']
+        # Filter the top 5 available players and then for the specific position
+        top_available = draftable_players.head(5)
+        top_available = top_available[(top_available['pick_taken'].isna()) &
+                                          (top_available['POS'].apply(lambda x: x[:2]) == position)]
+        if not top_available.empty:
+            # Select the player with the lowest ADP within the top 5 available players for the needed position
+            selected_player_row = top_available.iloc[0]
+            draftable_players.at[selected_player_row.name, 'pick_taken'] = pick_number
+            return selected_player_row['Player'], position, selected_player_row['AVG.']
+
+    # If no players match the prioritized needs based on the gap, select the top available player overall
+    first_available = draftable_players[draftable_players['pick_taken'].isna()].head(1).iloc[0]
+    draftable_players.at[first_available.name, 'pick_taken'] = pick_number
+    return first_available['Player'], first_available['POS'][:2], first_available['AVG.']
+
 #########GET TEAM NAMES#####################
 # get user_id,team_id,username
-teams_df = fetch_league_users_and_rosters(league_id)
-print(teams_df)
+league_users = fetch_league_users(league_id)
+print(league_users)
 
 
 ############GET PLAYERS############
@@ -186,6 +241,7 @@ csv_file_path = './FantasyPros_2024_Dynasty_OP_Rankings.csv'
 
 # Read the CSV file into a DataFrame
 adp_df = pd.read_csv(csv_file_path)
+
 
 # Assuming fetch_players_details fetches player details as before
 players_details_adp = fetch_players_details_and_adp()
@@ -213,7 +269,7 @@ players_df['roster_id'] = players_df['player_id'].apply(get_roster_id)
 #add username
 # Convert roster_id in player_df to int for matching
 #players_df['roster_id'] = players_df['roster_id'].astype(int)
-players_df = pd.merge(players_df, teams_df[['roster_id', 'username']], on='roster_id', how='left')
+players_df = pd.merge(players_df, league_users[['roster_id', 'username']], on='roster_id', how='left')
 
 print(players_df.head())
 
@@ -222,28 +278,32 @@ print(players_df.head())
 starter_quality_counts = {'QB': 2, 'RB': 3, 'WR': 4, 'TE': 1}
 depth_counts = {'QB': 3, 'RB': 4, 'WR': 6, 'TE': 2}
 
-# Calculate scores and create the combined DataFrame
-combined_scores_df = calculate_combined_scores(players_df)
-print(combined_scores_df)
+# # Calculate scores and create the combined DataFrame
+# combined_scores_df = calculate_combined_scores(players_df)
+# print(combined_scores_df)
+#
+# #calculate league avg
+# league_pos_avg = combined_scores_df.groupby('position')[['starter_score', 'depth_score']].median().reset_index()
+# print(league_pos_avg)
+#
+# #calculate team avg
+# teams_avg = combined_scores_df.groupby('username')[['starter_score', 'depth_score']].median().reset_index()
+# print(teams_avg)
+#
+# #now do team needs
+# # Merge the individual team scores with the league averages
+# comparison_df = pd.merge(combined_scores_df, league_pos_avg, on='position', suffixes=('_team', '_league'))
+#
+# # Identify positions for improvement
+# comparison_df['improve_starter'] = comparison_df['starter_score_team'] > comparison_df['starter_score_league']
+# comparison_df['improve_depth'] = comparison_df['depth_score_team'] > comparison_df['depth_score_league']
+#
+# # Filter positions that need improvement
+# positions_to_improve = comparison_df[(comparison_df['improve_starter']) | (comparison_df['improve_depth'])]
 
-#calculate league avg
-league_pos_avg = combined_scores_df.groupby('position')[['starter_score', 'depth_score']].median().reset_index()
-print(league_pos_avg)
-
-#calculate team avg
-teams_avg = combined_scores_df.groupby('username')[['starter_score', 'depth_score']].median().reset_index()
-print(teams_avg)
-
-#now do team needs
-# Merge the individual team scores with the league averages
-comparison_df = pd.merge(combined_scores_df, league_pos_avg, on='position', suffixes=('_team', '_league'))
-
-# Identify positions for improvement
-comparison_df['improve_starter'] = comparison_df['starter_score_team'] > comparison_df['starter_score_league']
-comparison_df['improve_depth'] = comparison_df['depth_score_team'] > comparison_df['depth_score_league']
-
-# Filter positions that need improvement
-positions_to_improve = comparison_df[(comparison_df['improve_starter']) | (comparison_df['improve_depth'])]
+# Example usage (Assuming calculate_combined_scores and players_df are defined)
+positions_to_improve, league_team_avg = get_positions_to_improve(players_df)
+#print(positions_to_improve)
 
 print(positions_to_improve[['username', 'position', 'improve_starter', 'improve_depth']])
 
@@ -260,7 +320,7 @@ draft_picks = dict(sorted(draft_picks.items()))
 #print(draft_picks)
 
 # Convert DataFrame to roster_id to username mapping
-roster_id_to_username = pd.Series(teams_df.username.values,index=teams_df.roster_id).to_dict()
+roster_id_to_username = pd.Series(league_users.username.values, index=league_users.roster_id).to_dict()
 
 # Transform keys in the original dictionary
 username_to_picks = {roster_id_to_username.get(k, "Unknown"): v for k, v in pick_owners.items()}
@@ -282,7 +342,6 @@ print(draftable_players)
 
 ##########MOCK DRAFT
 
-import pandas as pd
 
 # Assuming draftable_players, positions_to_improve, and draft_picks are already defined
 
@@ -293,39 +352,6 @@ draftable_players = draftable_players.sort_values(by='AVG.')
 draftable_players['pick_taken'] = None
 draftable_players['username'] = None
 
-
-# Function to find the best available player based on team needs
-# def find_best_available(draftable_players, positions_needed, pick_number):
-#     top_available = draftable_players[draftable_players['pick_taken'].isna()].head(5)
-#     for _, row in top_available.iterrows():
-#         if row['POS'][:2] in positions_needed:
-#             draftable_players.at[row.name, 'pick_taken'] = pick_number
-#             return row['Player'], row['POS'][:2]
-#     # If no specific needs are met, pick the top available player
-#     first_available = top_available.iloc[0]
-#     draftable_players.at[first_available.name, 'pick_taken'] = pick_number
-#     return first_available['Player'], first_available['POS'][:2]
-
-def find_best_available(draftable_players, user_needs, pick_number):
-    # Sort user needs by the gap to prioritize higher gaps
-    user_needs_sorted = user_needs.sort_values(by='gap', ascending=False)
-
-    for _, need_row in user_needs_sorted.iterrows():
-        position = need_row['position']
-        # Filter the top 5 available players and then for the specific position
-        top_available = draftable_players.head(5)
-        top_available = top_available[(top_available['pick_taken'].isna()) &
-                                          (top_available['POS'].apply(lambda x: x[:2]) == position)]
-        if not top_available.empty:
-            # Select the player with the lowest ADP within the top 5 available players for the needed position
-            selected_player_row = top_available.iloc[0]
-            draftable_players.at[selected_player_row.name, 'pick_taken'] = pick_number
-            return selected_player_row['Player'], position
-
-    # If no players match the prioritized needs based on the gap, select the top available player overall
-    first_available = draftable_players[draftable_players['pick_taken'].isna()].head(1).iloc[0]
-    draftable_players.at[first_available.name, 'pick_taken'] = pick_number
-    return first_available['Player'], first_available['POS'][:2]
 
 
 # Mock draft simulation
@@ -343,7 +369,15 @@ for pick_number, username in pick_to_username.items():
     # positions_needed = user_needs.sort_values(by='gap', ascending=False)['position'].tolist()
 
     # Find the best available player based on the team's needs
-    player_selected, position_selected = find_best_available(draftable_players, user_needs, pick_number)
+    player_selected, position_selected, adp = find_best_available(draftable_players, user_needs, pick_number)
+
+    #add draft pick to players_df
+    #make player name and ADP consistent
+    #remove non applicable positions
+    players_df.loc[(players_df['player_name'] == player_selected) & (players_df['roster_id'].isna()), 'username'] = username
+
+    #update_positions_to_improve
+    positions_to_improve, league_team_avg = get_positions_to_improve(players_df)
 
     # Assign the username to the selected player
     draftable_players.loc[draftable_players['pick_taken'] == pick_number, 'username'] = username
