@@ -9,7 +9,7 @@ requests_cache.install_cache('sleeper', expire_after=43200) #12 hour cache
 league_id = "1062924204691087360"
 
 
-def get_draft_picks(league_id):
+def get_draft_picks(league_id, league_users):
     """Fetch all draft picks for the league, including details about traded picks."""
     # Fetch the draft ID(s) for the league
     drafts_url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
@@ -61,13 +61,31 @@ def get_draft_picks(league_id):
         pick_owners[orig_owner].remove(pick_to_move)
         pick_owners[new_owner_id].append(pick_to_move)
 
-    
+    draft_picks = {}
+    for keys, values in pick_owners.items():
+        for i in values:
+            draft_picks[i] = keys
+    draft_picks = dict(sorted(draft_picks.items()))
+    # print(draft_picks)
+
+    # Convert DataFrame to roster_id to username mapping
+    roster_id_to_username = pd.Series(league_users.username.values, index=league_users.roster_id).to_dict()
+
+    # Transform keys in the original dictionary
+    username_to_picks = {roster_id_to_username.get(k, "Unknown"): v for k, v in pick_owners.items()}
+
+    print(username_to_picks)
+
+    # Transform keys in the original dictionary
+    pick_to_username = {pick: roster_id_to_username.get(team_id, "Unknown") for pick, team_id in draft_picks.items()}
+    print(pick_to_username)
+
     # Return the updated mapping
-    return pick_owners
+    return pick_owners, draft_picks, username_to_picks, pick_to_username
 
 
 
-def fetch_league_users(league_id):
+def get_league_users(league_id):
     """Fetch league users and rosters and return a DataFrame with the mapping."""
     # Endpoints for league users and rosters
     users_url = f"https://api.sleeper.app/v1/league/{league_id}/users"
@@ -125,7 +143,7 @@ def standardize_name(name):
     return name.strip().upper()
 
 
-def fetch_players_details_and_adp():
+def fetch_players_details_and_adp(adp_df):
     """
     Fetch player details and combine with ADP data from the uploaded CSV based on player names.
     """
@@ -155,12 +173,17 @@ def fetch_players_details_and_adp():
     return players_details
 
 # Function to apply for each row in DataFrame to fetch roster_id
-def get_roster_id(player_id):
+def get_roster_id(player_id, player_id_to_roster_id):
     return player_id_to_roster_id.get(player_id, None)
 
 
 # Function to calculate both starter and depth scores
 def calculate_combined_scores(df):
+
+    # Define the counts for the starter quality and depth for each position
+    starter_quality_counts = {'QB': 2, 'RB': 3, 'WR': 4, 'TE': 1}
+    depth_counts = {'QB': 3, 'RB': 4, 'WR': 6, 'TE': 2}
+
     scores_list = []
     # Filter out rows without a username
     filtered_df = df.dropna(subset=['username'])
@@ -191,6 +214,7 @@ def get_positions_to_improve(players_df):
     :param players_df: DataFrame containing player details including team assignments.
     :return: DataFrame indicating positions to improve for each team.
     """
+
     # Step 1: Calculate scores for each position on each team
     combined_scores_df = calculate_combined_scores(players_df)
 
@@ -240,229 +264,377 @@ def find_best_available(draftable_players, user_needs, pick_number):
     draftable_players.at[first_available.name, 'pick_taken'] = pick_number
     return first_available['player'], first_available['position'], first_available['adp']
 
-#########GET TEAM NAMES#####################
-# get user_id,team_id,username
-league_users = fetch_league_users(league_id)
-print(league_users)
+def get_players(league_id, league_users):
+    # Path to the uploaded CSV file
+    csv_file_path = './FantasyPros_2024_Dynasty_OP_Rankings.csv'
+
+    # Read the CSV file into a DataFrame
+    adp_df = pd.read_csv(csv_file_path)
+
+    # Assuming fetch_players_details fetches player details as before
+    players_details_adp = fetch_players_details_and_adp(adp_df)
+    players_df = pd.DataFrame(players_details_adp)
+    players_df = players_df.dropna()
+    players_df = players_df[players_df['position'].isin(['QB', 'RB', 'WR', 'TE'])]
+    players_df['player'] = players_df['player_name'].apply(standardize_name)
+    players_df.drop(['player_name'], axis=1, inplace=True)
+    print(players_df.head())
+
+    # add roster id to players_df
+    rosters_url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
+    rosters_response = requests.get(rosters_url)
+    rosters_data = rosters_response.json()
+
+    # Initialize an empty dictionary to hold the mapping
+    player_id_to_roster_id = {}
+
+    # Populate the dictionary with player_id to roster_id mapping
+    for roster in rosters_data:
+        for player_id in roster.get('players', []):
+            # Ensure player_id is a string if your DataFrame has player_id as string
+            player_id_to_roster_id[str(player_id)] = roster['roster_id']
+
+    # Add 'roster_id' column
+    players_df['roster_id'] = players_df['player_id'].apply(lambda x: get_roster_id(x, player_id_to_roster_id))
+
+    # add username
+    # Convert roster_id in player_df to int for matching
+    # players_df['roster_id'] = players_df['roster_id'].astype(int)
+    players_df = pd.merge(players_df, league_users[['roster_id', 'username']], on='roster_id', how='left')
+
+    print(players_df.head())
+
+    return players_df, adp_df, player_id_to_roster_id
+
+def get_draftable_players(adp_df):
+    # Sort adp_df by ADP, filter for 'FA' team, and select the top 100
+    draftable_players = adp_df.sort_values(by='adp')[adp_df['TEAM'] == 'FA'].head(100)
+
+    return draftable_players
+
+def run_mock_draft(draftable_players, pick_to_username, positions_to_improve, players_df):
+    # Ensure draftable_players is sorted by ADP
+    draftable_players = draftable_players.sort_values(by='adp')
+
+    # Initialize columns for pick_taken and username in draftable_players
+    draftable_players['pick_taken'] = None
+    draftable_players['username'] = None
+
+    team_gain_arr = []
+
+    # Mock draft simulation
+    for pick_number, username in pick_to_username.items():
+        # Determine if the pick is for a starter or depth player
+        pick_type = 'improve_starter' if pick_number <= 26 else 'improve_depth'
+
+        # Get positions to improve for the current user
+        user_needs = positions_to_improve[(positions_to_improve['username'] == username) &
+                                          (positions_to_improve[pick_type])]
+        # user_needs['gap'] = (user_needs['starter_score_team'] - user_needs['starter_score_league']) + \
+        #                     user_needs['depth_score_team'] - user_needs['depth_score_league']
+        # Get the list of positions that need improvement
+
+        # positions_needed = user_needs.sort_values(by='gap', ascending=False)['position'].tolist()
+
+        # Find the best available player based on the team's needs
+        player_selected, position_selected, adp = find_best_available(draftable_players, user_needs, pick_number)
+
+        # add draft pick to players_df
+
+        # Check if the player is already in the DataFrame
+        if player_selected in players_df['player'].values:
+            # Update the row for the existing player
+            players_df.loc[players_df['player'] == player_selected, ['username', 'adp', 'position']] = [
+                username, adp, position_selected
+            ]
+        else:
+            # Append a new row for the new player
+            new_player_info = {'player': player_selected, 'position': position_selected, 'adp': adp,
+                               'username': username}
+            # Convert the new player info into a DataFrame with a single row
+            new_player_df = pd.DataFrame([new_player_info])
+
+            # Use pd.concat() to add the new row to the existing DataFrame
+            players_df = pd.concat([players_df, new_player_df], ignore_index=True)
+
+        #get team total score gain pt1
+        overall_team_score = players_df[players_df['username']==username]\
+            .sort_values(by='adp', ascending=True)['adp'].values[:22].sum()
 
 
-############GET PLAYERS############
+        # get team total score gain pt1
+        new_overall_team_score = players_df[players_df['username'] == username] \
+                                 .sort_values(by='adp', ascending=True)['adp'].values[:22].sum()
 
-# Path to the uploaded CSV file
-csv_file_path = './FantasyPros_2024_Dynasty_OP_Rankings.csv'
+        overall_team_score_gain = overall_team_score - new_overall_team_score
 
-# Read the CSV file into a DataFrame
-adp_df = pd.read_csv(csv_file_path)
+        team_gain_arr.append(overall_team_score_gain)
 
+        # update_positions_to_improve
+        positions_to_improve, league_team_avg = get_positions_to_improve(players_df)
 
-# Assuming fetch_players_details fetches player details as before
-players_details_adp = fetch_players_details_and_adp()
-players_df = pd.DataFrame(players_details_adp)
-players_df = players_df.dropna()
-players_df = players_df[players_df['position'].isin(['QB', 'RB', 'WR', 'TE'])]
-players_df['player'] = players_df['player_name'].apply(standardize_name)
-players_df.drop(['player_name'], axis = 1, inplace=True)
-print(players_df.head())
+        # Assign the username to the selected player
+        draftable_players.loc[draftable_players['pick_taken'] == pick_number, 'username'] = username
 
-#add roster id to players_df
-rosters_url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
-rosters_response = requests.get(rosters_url)
-rosters_data = rosters_response.json()
+        print(f"Pick {pick_number} by {username}: {player_selected} ({position_selected}) : {overall_team_score_gain}")
 
-# Initialize an empty dictionary to hold the mapping
-player_id_to_roster_id = {}
+    # Review the draft results
+    draft_results = draftable_players[draftable_players['pick_taken'].notna()].copy()
+    draft_results = draft_results.sort_values(by='pick_taken', ascending=True)
+    draft_results = draft_results[['pick_taken',
+                                   'player',
+                                   'position',
+                                   'username',
+                                   'adp']]
+    draft_results['pick_team_improvement'] = team_gain_arr
 
-# Populate the dictionary with player_id to roster_id mapping
-for roster in rosters_data:
-    for player_id in roster.get('players', []):
-        # Ensure player_id is a string if your DataFrame has player_id as string
-        player_id_to_roster_id[str(player_id)] = roster['roster_id']
+    print(draft_results)
+    return draft_results, positions_to_improve, league_team_avg
 
-# Add 'roster_id' column
-players_df['roster_id'] = players_df['player_id'].apply(get_roster_id)
+def get_postdraft_analysis(league_team_avg, preraft_team_score, predraft_positions_to_improve, positions_to_improve):
+    # team rankings before and after and movement
+    postdraft_team_score = league_team_avg.copy()
 
-#add username
-# Convert roster_id in player_df to int for matching
-#players_df['roster_id'] = players_df['roster_id'].astype(int)
-players_df = pd.merge(players_df, league_users[['roster_id', 'username']], on='roster_id', how='left')
+    team_score_change = preraft_team_score.copy()
+    team_score_change.rename(columns={'starter_score': 'predraft_starter_score', 'depth_score': 'predraft_depth_score'},
+                             inplace=True)
+    team_score_change['postdraft_starter_score'] = postdraft_team_score['starter_score']
+    team_score_change['postdraft_depth_score'] = postdraft_team_score['depth_score']
 
-print(players_df.head())
+    team_score_change['starter_improvement'] = team_score_change['postdraft_starter_score'] - team_score_change[
+        'predraft_starter_score']
+    team_score_change['depth_improvement'] = team_score_change['postdraft_depth_score'] - team_score_change[
+        'predraft_depth_score']
 
-########### IDENTIFY TEAM NEEDS################
-# Define the counts for the starter quality and depth for each position
-starter_quality_counts = {'QB': 2, 'RB': 3, 'WR': 4, 'TE': 1}
-depth_counts = {'QB': 3, 'RB': 4, 'WR': 6, 'TE': 2}
+    # team position group ranking improvements
+    postdraft_positions_to_improve = positions_to_improve.copy()
 
-# # Calculate scores and create the combined DataFrame
-# combined_scores_df = calculate_combined_scores(players_df)
-# print(combined_scores_df)
-#
-# #calculate league avg
-# league_pos_avg = combined_scores_df.groupby('position')[['starter_score', 'depth_score']].median().reset_index()
-# print(league_pos_avg)
-#
-# #calculate team avg
-# teams_avg = combined_scores_df.groupby('username')[['starter_score', 'depth_score']].median().reset_index()
-# print(teams_avg)
-#
-# #now do team needs
-# # Merge the individual team scores with the league averages
-# comparison_df = pd.merge(combined_scores_df, league_pos_avg, on='position', suffixes=('_team', '_league'))
-#
-# # Identify positions for improvement
-# comparison_df['improve_starter'] = comparison_df['starter_score_team'] > comparison_df['starter_score_league']
-# comparison_df['improve_depth'] = comparison_df['depth_score_team'] > comparison_df['depth_score_league']
-#
-# # Filter positions that need improvement
-# positions_to_improve = comparison_df[(comparison_df['improve_starter']) | (comparison_df['improve_depth'])]
+    merged_df = pd.merge(
+        predraft_positions_to_improve,
+        postdraft_positions_to_improve,
+        on=['username', 'position'],
+        suffixes=('_predraft', '_postdraft')
+    )
 
-# Example usage (Assuming calculate_combined_scores and players_df are defined)
-positions_to_improve, league_team_avg = get_positions_to_improve(players_df)
-preraft_team_score = league_team_avg.copy()
-predraft_positions_to_improve = positions_to_improve.copy()
-#print(positions_to_improve)
+    # Step 2: Calculate differences
+    merged_df['starter_score_diff'] = merged_df['starter_score_team_postdraft'] - merged_df[
+        'starter_score_team_predraft']
+    merged_df['depth_score_diff'] = merged_df['depth_score_team_postdraft'] - merged_df['depth_score_team_predraft']
 
-print(positions_to_improve[['username', 'position', 'improve_starter', 'improve_depth']])
+    # Select relevant columns for the output
+    position_score_change = merged_df[['username', 'position', 'starter_score_diff', 'depth_score_diff']]
+
+    print(position_score_change)
+
+    return postdraft_team_score, team_score_change, position_score_change
+
+if __name__ == "__main__":
+    ######### GET USERS ##################
+    # get user_id,team_id,username
+    league_users = get_league_users(league_id)
+    print(league_users)
 
 
-###############GET DRAFT PICKS###################
-pick_owners = get_draft_picks(league_id)
-#print(pick_owners)
+    ############ GET PLAYERS ############
 
-draft_picks= {}
-for keys,values in pick_owners.items():
-    for i in values:
-        draft_picks[i]=keys
-draft_picks = dict(sorted(draft_picks.items()))
-#print(draft_picks)
+    players_df, adp_df, player_id_to_roster_id = get_players(league_id, league_users)
 
-# Convert DataFrame to roster_id to username mapping
-roster_id_to_username = pd.Series(league_users.username.values, index=league_users.roster_id).to_dict()
+    # # Path to the uploaded CSV file
+    # csv_file_path = './FantasyPros_2024_Dynasty_OP_Rankings.csv'
+    #
+    # # Read the CSV file into a DataFrame
+    # adp_df = pd.read_csv(csv_file_path)
+    #
+    #
+    # # Assuming fetch_players_details fetches player details as before
+    # players_details_adp = fetch_players_details_and_adp()
+    # players_df = pd.DataFrame(players_details_adp)
+    # players_df = players_df.dropna()
+    # players_df = players_df[players_df['position'].isin(['QB', 'RB', 'WR', 'TE'])]
+    # players_df['player'] = players_df['player_name'].apply(standardize_name)
+    # players_df.drop(['player_name'], axis = 1, inplace=True)
+    # print(players_df.head())
+    #
+    # #add roster id to players_df
+    # rosters_url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
+    # rosters_response = requests.get(rosters_url)
+    # rosters_data = rosters_response.json()
+    #
+    # # Initialize an empty dictionary to hold the mapping
+    # player_id_to_roster_id = {}
+    #
+    # # Populate the dictionary with player_id to roster_id mapping
+    # for roster in rosters_data:
+    #     for player_id in roster.get('players', []):
+    #         # Ensure player_id is a string if your DataFrame has player_id as string
+    #         player_id_to_roster_id[str(player_id)] = roster['roster_id']
+    #
+    # # Add 'roster_id' column
+    # players_df['roster_id'] = players_df['player_id'].apply(get_roster_id)
+    #
+    # #add username
+    # # Convert roster_id in player_df to int for matching
+    # #players_df['roster_id'] = players_df['roster_id'].astype(int)
+    # players_df = pd.merge(players_df, league_users[['roster_id', 'username']], on='roster_id', how='left')
+    #
+    # print(players_df.head())
 
-# Transform keys in the original dictionary
-username_to_picks = {roster_id_to_username.get(k, "Unknown"): v for k, v in pick_owners.items()}
-
-print(username_to_picks)
-
-# Transform keys in the original dictionary
-pick_to_username = {pick: roster_id_to_username.get(team_id, "Unknown") for pick, team_id in draft_picks.items()}
-print(pick_to_username)
+    ########### IDENTIFY TEAM NEEDS################
 
 
-####DRAFTABLE PLAYERS#########
-# Sort adp_df by ADP, filter for 'FA' team, and select the top 100
-draftable_players= adp_df.sort_values(by='adp')[adp_df['TEAM'] == 'FA'].head(100)
-
-print(draftable_players)
-
-
-
-##########MOCK DRAFT
-
-# Ensure draftable_players is sorted by ADP
-draftable_players = draftable_players.sort_values(by='adp')
-
-# Initialize columns for pick_taken and username in draftable_players
-draftable_players['pick_taken'] = None
-draftable_players['username'] = None
-
-
-
-# Mock draft simulation
-for pick_number, username in pick_to_username.items():
-    # Determine if the pick is for a starter or depth player
-    pick_type = 'improve_starter' if pick_number <= 26 else 'improve_depth'
-
-    # Get positions to improve for the current user
-    user_needs = positions_to_improve[(positions_to_improve['username'] == username) &
-                                      (positions_to_improve[pick_type])]
-    # user_needs['gap'] = (user_needs['starter_score_team'] - user_needs['starter_score_league']) + \
-    #                     user_needs['depth_score_team'] - user_needs['depth_score_league']
-    # Get the list of positions that need improvement
-
-    # positions_needed = user_needs.sort_values(by='gap', ascending=False)['position'].tolist()
-
-    # Find the best available player based on the team's needs
-    player_selected, position_selected, adp = find_best_available(draftable_players, user_needs, pick_number)
-
-    #add draft pick to players_df
-
-    # Check if the player is already in the DataFrame
-    if player_selected in players_df['player'].values:
-        # Update the row for the existing player
-        players_df.loc[players_df['player'] == player_selected, ['username', 'ADP', 'position']] = [
-            username, adp, position_selected
-        ]
-    else:
-        # Append a new row for the new player
-        new_player_info = {'player': player_selected, 'position': position_selected, 'adp': adp,
-                                        'username': username}
-        # Convert the new player info into a DataFrame with a single row
-        new_player_df = pd.DataFrame([new_player_info])
-
-        # Use pd.concat() to add the new row to the existing DataFrame
-        players_df = pd.concat([players_df, new_player_df], ignore_index=True)
-
-        # players_df = players_df.append({'player': player_selected, 'position': position_selected, 'adp': adp,
-        #                                 'username': username}, ignore_index=True)
-
-    #players_df.loc[(players_df['player'] == player_selected) & (players_df['roster_id'].isna()), 'username'] = username
-
-    #update_positions_to_improve
+    # Example usage (Assuming calculate_combined_scores and players_df are defined)
     positions_to_improve, league_team_avg = get_positions_to_improve(players_df)
+    preraft_team_score = league_team_avg.copy()
+    predraft_positions_to_improve = positions_to_improve.copy()
 
-    # Assign the username to the selected player
-    draftable_players.loc[draftable_players['pick_taken'] == pick_number, 'username'] = username
+    print(positions_to_improve[['username', 'position', 'improve_starter', 'improve_depth']])
 
-    print(f"Pick {pick_number} by {username}: {player_selected} ({position_selected})")
 
-# Review the draft results
-draft_results = draftable_players[draftable_players['pick_taken'].notna()].copy()
-draft_results = draft_results.sort_values(by='pick_taken', ascending=True)
-draft_results = draft_results[['pick_taken',
-           'player',
-           'position',
-           'username',
-           'adp']]
+    ###############GET DRAFT PICKS###################
+    pick_owners, draft_picks, username_to_picks, pick_to_username = get_draft_picks(league_id,league_users)
+    #print(pick_owners)
 
-print(draft_results)
+    # draft_picks= {}
+    # for keys,values in pick_owners.items():
+    #     for i in values:
+    #         draft_picks[i]=keys
+    # draft_picks = dict(sorted(draft_picks.items()))
+    # #print(draft_picks)
+    #
+    # # Convert DataFrame to roster_id to username mapping
+    # roster_id_to_username = pd.Series(league_users.username.values, index=league_users.roster_id).to_dict()
+    #
+    # # Transform keys in the original dictionary
+    # username_to_picks = {roster_id_to_username.get(k, "Unknown"): v for k, v in pick_owners.items()}
+    #
+    # print(username_to_picks)
+    #
+    # # Transform keys in the original dictionary
+    # pick_to_username = {pick: roster_id_to_username.get(team_id, "Unknown") for pick, team_id in draft_picks.items()}
+    # print(pick_to_username)
 
-#post draft analysis
 
-#team rankings before and after and movement
-postdraft_team_score = league_team_avg.copy()
+    ####DRAFTABLE PLAYERS#########
 
-team_score_change = preraft_team_score.copy()
-team_score_change.rename(columns={'starter_score': 'predraft_starter_score', 'depth_score': 'predraft_depth_score'}, inplace=True)
-team_score_change['postdraft_starter_score'] = postdraft_team_score['starter_score']
-team_score_change['postdraft_depth_score'] = postdraft_team_score['depth_score']
+    draftable_players = get_draftable_players(adp_df)
 
-team_score_change['starter_improvement'] = team_score_change['postdraft_starter_score'] - team_score_change['predraft_starter_score']
-team_score_change['depth_improvement'] = team_score_change['postdraft_depth_score'] - team_score_change['predraft_depth_score']
+    # # Sort adp_df by ADP, filter for 'FA' team, and select the top 100
+    # draftable_players= adp_df.sort_values(by='adp')[adp_df['TEAM'] == 'FA'].head(100)
 
-#team position group ranking improvements
-postdraft_positions_to_improve = positions_to_improve.copy()
-
-merged_df = pd.merge(
-    predraft_positions_to_improve,
-    postdraft_positions_to_improve,
-    on=['username', 'position'],
-    suffixes=('_predraft', '_postdraft')
-)
-
-# Step 2: Calculate differences
-merged_df['starter_score_diff'] = merged_df['starter_score_team_postdraft'] - merged_df['starter_score_team_predraft']
-merged_df['depth_score_diff'] = merged_df['depth_score_team_postdraft'] - merged_df['depth_score_team_predraft']
-
-# Select relevant columns for the output
-position_score_change = merged_df[['username', 'position', 'starter_score_diff', 'depth_score_diff']]
-
-print(position_score_change)
-
-#balance AVG. with gap  to decide pick
+    print(draftable_players)
 
 
 
-#find interactivity with setting picks
+    ######### MOCK DRAFT ##########
 
-#test scenarios
+    draft_results, positions_to_improve, league_team_avg = run_mock_draft(draftable_players, pick_to_username, positions_to_improve, players_df)
+
+    # # Ensure draftable_players is sorted by ADP
+    # draftable_players = draftable_players.sort_values(by='adp')
+    #
+    # # Initialize columns for pick_taken and username in draftable_players
+    # draftable_players['pick_taken'] = None
+    # draftable_players['username'] = None
+    #
+    #
+    #
+    # # Mock draft simulation
+    # for pick_number, username in pick_to_username.items():
+    #     # Determine if the pick is for a starter or depth player
+    #     pick_type = 'improve_starter' if pick_number <= 26 else 'improve_depth'
+    #
+    #     # Get positions to improve for the current user
+    #     user_needs = positions_to_improve[(positions_to_improve['username'] == username) &
+    #                                       (positions_to_improve[pick_type])]
+    #     # user_needs['gap'] = (user_needs['starter_score_team'] - user_needs['starter_score_league']) + \
+    #     #                     user_needs['depth_score_team'] - user_needs['depth_score_league']
+    #     # Get the list of positions that need improvement
+    #
+    #     # positions_needed = user_needs.sort_values(by='gap', ascending=False)['position'].tolist()
+    #
+    #     # Find the best available player based on the team's needs
+    #     player_selected, position_selected, adp = find_best_available(draftable_players, user_needs, pick_number)
+    #
+    #     #add draft pick to players_df
+    #
+    #     # Check if the player is already in the DataFrame
+    #     if player_selected in players_df['player'].values:
+    #         # Update the row for the existing player
+    #         players_df.loc[players_df['player'] == player_selected, ['username', 'ADP', 'position']] = [
+    #             username, adp, position_selected
+    #         ]
+    #     else:
+    #         # Append a new row for the new player
+    #         new_player_info = {'player': player_selected, 'position': position_selected, 'adp': adp,
+    #                                         'username': username}
+    #         # Convert the new player info into a DataFrame with a single row
+    #         new_player_df = pd.DataFrame([new_player_info])
+    #
+    #         # Use pd.concat() to add the new row to the existing DataFrame
+    #         players_df = pd.concat([players_df, new_player_df], ignore_index=True)
+    #
+    #         # players_df = players_df.append({'player': player_selected, 'position': position_selected, 'adp': adp,
+    #         #                                 'username': username}, ignore_index=True)
+    #
+    #     #players_df.loc[(players_df['player'] == player_selected) & (players_df['roster_id'].isna()), 'username'] = username
+    #
+    #     #update_positions_to_improve
+    #     positions_to_improve, league_team_avg = get_positions_to_improve(players_df)
+    #
+    #     # Assign the username to the selected player
+    #     draftable_players.loc[draftable_players['pick_taken'] == pick_number, 'username'] = username
+    #
+    #     print(f"Pick {pick_number} by {username}: {player_selected} ({position_selected})")
+    #
+    # # Review the draft results
+    # draft_results = draftable_players[draftable_players['pick_taken'].notna()].copy()
+    # draft_results = draft_results.sort_values(by='pick_taken', ascending=True)
+    # draft_results = draft_results[['pick_taken',
+    #            'player',
+    #            'position',
+    #            'username',
+    #            'adp']]
+    #
+    # print(draft_results)
+
+    ###### POST DRAFT ANALYSIS ######
+    postdraft_team_score, team_score_change, position_score_change = get_postdraft_analysis()
+
+
+    # #team rankings before and after and movement
+    # postdraft_team_score = league_team_avg.copy()
+    #
+    # team_score_change = preraft_team_score.copy()
+    # team_score_change.rename(columns={'starter_score': 'predraft_starter_score', 'depth_score': 'predraft_depth_score'}, inplace=True)
+    # team_score_change['postdraft_starter_score'] = postdraft_team_score['starter_score']
+    # team_score_change['postdraft_depth_score'] = postdraft_team_score['depth_score']
+    #
+    # team_score_change['starter_improvement'] = team_score_change['postdraft_starter_score'] - team_score_change['predraft_starter_score']
+    # team_score_change['depth_improvement'] = team_score_change['postdraft_depth_score'] - team_score_change['predraft_depth_score']
+    #
+    # #team position group ranking improvements
+    # postdraft_positions_to_improve = positions_to_improve.copy()
+    #
+    # merged_df = pd.merge(
+    #     predraft_positions_to_improve,
+    #     postdraft_positions_to_improve,
+    #     on=['username', 'position'],
+    #     suffixes=('_predraft', '_postdraft')
+    # )
+    #
+    # # Step 2: Calculate differences
+    # merged_df['starter_score_diff'] = merged_df['starter_score_team_postdraft'] - merged_df['starter_score_team_predraft']
+    # merged_df['depth_score_diff'] = merged_df['depth_score_team_postdraft'] - merged_df['depth_score_team_predraft']
+    #
+    # # Select relevant columns for the output
+    # position_score_change = merged_df[['username', 'position', 'starter_score_diff', 'depth_score_diff']]
+    #
+    # print(position_score_change)
+
+
+    #TODO
+    #balance AVG. with gap  to decide pick
+
+    #find interactivity with setting picks
+
+    #test trade scenarios
