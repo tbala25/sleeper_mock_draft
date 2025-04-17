@@ -6,7 +6,7 @@ warnings.filterwarnings("ignore")
 
 requests_cache.install_cache('sleeper', expire_after=43200) #12 hour cache
 
-league_id = "1062924204691087360"
+league_id = "1180634108313018368"
 
 
 def get_draft_picks(league_id):
@@ -150,7 +150,7 @@ def fetch_players_details_and_adp():
     adp_df['position'] = adp_df['POS'].apply(lambda x: x[:2])
 
     #drop unneccesary columns
-    adp_df.drop(['PLAYER NAME', 'AVG.', 'POS', 'ECR VS. ADP'], axis=1, inplace=True)
+    adp_df.drop(['PLAYER NAME', 'AVG.', 'POS'], axis=1, inplace=True)
 
     return players_details
 
@@ -249,7 +249,7 @@ print(league_users)
 ############GET PLAYERS############
 
 # Path to the uploaded CSV file
-csv_file_path = './FantasyPros_2024_Dynasty_OP_Rankings.csv'
+csv_file_path = './FantasyPros_2025_Dynasty_OP_Rankings.csv'
 
 # Read the CSV file into a DataFrame
 adp_df = pd.read_csv(csv_file_path)
@@ -283,7 +283,7 @@ players_df['roster_id'] = players_df['player_id'].apply(get_roster_id)
 
 #add username
 # Convert roster_id in player_df to int for matching
-#players_df['roster_id'] = players_df['roster_id'].astype(int)
+players_df['roster_id'] = pd.to_numeric(players_df['roster_id'], errors='coerce').astype('Int64')
 players_df = pd.merge(players_df, league_users[['roster_id', 'username']], on='roster_id', how='left')
 
 print(players_df.head())
