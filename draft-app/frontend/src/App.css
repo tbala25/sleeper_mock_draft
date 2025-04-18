@@ -1,49 +1,59 @@
-body {
-  font-family: 'Arial', sans-serif;
-  background-color: #f0f3f5;
-  margin: 0;
-  padding: 0;
-}
-
 .container {
-  padding: 20px;
-  max-width: 1200px;
-  margin: auto;
+  padding: 1.5rem;
+  font-family: sans-serif;
 }
 
-.controls button {
-  margin: 10px;
-  padding: 10px 20px;
-  font-size: 16px;
+.controls {
+  margin-bottom: 1rem;
+  display: flex;
+  gap: 1rem;
 }
 
-.clock {
-  background: #006400;
-  color: white;
-  padding: 10px;
-  margin-top: 20px;
+.layout {
+  display: flex;
+  gap: 2rem;
+  margin-top: 1rem;
+}
+
+/* LEFT COLUMN */
+.draft-picks {
+  width: 300px;
+  max-height: 600px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
   border-radius: 8px;
+  padding: 1rem;
 }
 
-.board, .players {
-  margin-top: 20px;
-  background: white;
-  padding: 20px;
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pick {
+  padding: 0.5rem;
+  background: #f4f4f4;
+  border-radius: 4px;
+}
+
+/* RIGHT COLUMN */
+.available-players {
+  flex: 1;
+  border: 1px solid #ccc;
   border-radius: 8px;
+  padding: 1rem;
 }
 
-.players ul, .board ul {
+.available-players ul {
   list-style: none;
   padding: 0;
+  margin: 0;
 }
 
-.players li, .board li {
+.available-players li {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.players button {
-  margin-left: 10px;
-  padding: 5px 10px;
+  padding: 0.5rem;
+  border-bottom: 1px solid #eee;
 }
