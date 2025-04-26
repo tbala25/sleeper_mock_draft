@@ -1,84 +1,153 @@
+/* ────────────────────────────────────────────────────────────────────────────
+   Global & Reset
+───────────────────────────────────────────────────────────────────────────── */
 body {
   margin: 0;
-  background-color: #1D1E22;
+  background: #1D1E22;
   font-family: 'Inter', sans-serif;
-  color: #FFFFFF;
+  color: #FFF;
 }
 
-.container {
-  padding: 1.5rem;
+.App {
   max-width: 1200px;
-  margin: auto;
+  margin: 0 auto;
+  padding: 1.5rem;
 }
 
-h1 {
-  font-size: 2rem;
-  margin-bottom: 1rem;
-  color: #6E4AFF;
+/* ────────────────────────────────────────────────────────────────────────────
+   Header (FOTMOB‑style)
+───────────────────────────────────────────────────────────────────────────── */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #2A2B30;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.logo {
+  font-size: 1.5rem;
+  margin-right: 0.75rem;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #FFF;
+}
+
+.header-search {
+  position: relative;
+}
+
+.header-search input {
+  background: #383940;
+  border: none;
+  border-radius: 9999px;
+  padding: 0.5rem 2.5rem 0.5rem 1rem;
+  color: #FFF;
+  font-size: 0.9rem;
+}
+
+.header-search input::placeholder {
+  color: #BBB;
+}
+
+.search-icon {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #BBB;
+  font-size: 1rem;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   On‑the‑Clock Bar
+───────────────────────────────────────────────────────────────────────────── */
+.on-the-clock-bar {
+  background: #6E4AFF;
+  color: #FFF;
+  padding: 1rem;
+  border-radius: 8px;
+  text-align: center;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Controls
+───────────────────────────────────────────────────────────────────────────── */
 .controls {
-  margin-bottom: 2rem;
   display: flex;
   gap: 1rem;
+  margin-bottom: 2rem;
 }
 
 .controls button {
-  background-color: #6E4AFF;
-  color: #FFFFFF;
-  padding: 0.6rem 1.2rem;
+  background: #6E4AFF;
+  color: #FFF;
   border: none;
+  padding: 0.6rem 1.2rem;
   border-radius: 9999px;
-  cursor: pointer;
   font-weight: bold;
-  transition: background-color 0.3s ease;
+  cursor: pointer;
+  transition: background-color 0.2s;
 }
 
-.controls button:hover {
-  background-color: #00E0FF;
+.controls button:hover:not(:disabled) {
+  background: #00E0FF;
   color: #1D1E22;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   Layout
+───────────────────────────────────────────────────────────────────────────── */
 .layout {
   display: flex;
   gap: 2rem;
 }
 
-/* LEFT COLUMN */
+/* ────────────────────────────────────────────────────────────────────────────
+   LEFT COLUMN: Draft Picks
+───────────────────────────────────────────────────────────────────────────── */
 .draft-picks {
   width: 400px;
   max-height: 600px;
   overflow-y: auto;
-  background-color: #2A2B30;
+  background: #2A2B30;
   border-radius: 10px;
   padding: 1rem;
-}
-
-.pick-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: .5rem;
 }
 
-.round-label {
-  background-color: #00E0FF;
-  color: #1D1E22;
-  padding: 0.5rem;
-  font-weight: bold;
-  text-align: center;
-  border-radius: 6px;
-  margin: 0.5rem 0;
-}
+
 
 .pick {
-  height: auto;
-  padding: 0.75rem;
-  background-color: #383940;
-  border-radius: 8px;
+  padding: .5rem;        /* increased padding */
+  background: #33343A;    /* slightly darker base */
+  border-radius: 12px;
   font-weight: bold;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.pick:hover {
+  background: #3A3B42;
+}
+
+.pick:last-child {
+  margin-bottom: 0;
 }
 
 .pick-main {
@@ -86,26 +155,49 @@ h1 {
 }
 
 .needs-text {
-  font-size: 0.8rem;
-  color: #bbb;
-  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #BBB;
+  margin-top: 0.25rem;
 }
 
+/* ─── Refined “on‑the‑clock” styling ─── */
 .pick.on-the-clock {
-  background-color: #00E0FF;
-  color: #1D1E22;
-  font-weight: bold;
-  border: 2px solid #6E4AFF;
-  transform: scale(1.02);
-  transition: all 0.2s ease;
+  background-color: rgba(110, 74, 255, 0.15) !important;
+  border: 2px solid rgba(110, 74, 255, 0.8) !important;
+  color: #FFF !important;
+  transform: none !important;
 }
 
-/* RIGHT COLUMN */
+.pick.on-the-clock .needs-text {
+  color: #EEE !important;
+}
+
+.pick.on-the-clock:hover {
+  transform: translateY(-2px);
+}
+
+/* ─── Position tints on picks ─── */
+.pick.qb { background: rgba(70,130,180,0.2); }
+.pick.rb { background: rgba(60,179,113,0.2); }
+.pick.wr { background: rgba(255,165,0,0.2); }
+.pick.te { background: rgba(147,112,219,0.2); }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   RIGHT COLUMN: Available Players
+───────────────────────────────────────────────────────────────────────────── */
 .available-players {
-  flex: 1;
-  background-color: #2A2B30;
+  flex: none;
+  width: 360px;
+  background: #2A2B30;
   border-radius: 10px;
   padding: 1rem;
+}
+
+.available-players h2 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .available-players ul {
@@ -117,36 +209,46 @@ h1 {
 .available-players li {
   display: flex;
   justify-content: space-between;
-  padding: 0.75rem;
-  border-bottom: 1px solid #383940;
   align-items: center;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform 0.1s, background 0.2s;
+}
+
+.available-players li:last-child {
+  margin-bottom: 0;
+}
+
+.available-players li:hover {
+  transform: translateY(-2px);
+}
+
+/* Per‑position tints on available players */
+.available-players li.qb { background: rgba(70,130,180,0.2); }
+.available-players li.rb { background: rgba(60,179,113,0.2); }
+.available-players li.wr { background: rgba(255,165,0,0.2); }
+.available-players li.te { background: rgba(147,112,219,0.2); }
+
+/* Selected/highlight state */
+.available-players li.selected {
+  border: 2px solid rgba(110,74,255,0.8);
+  background: rgba(110,74,255,0.25);
 }
 
 .available-players li button {
-  background-color: #00E0FF;
+  background: #00E0FF;
   color: #1D1E22;
   border: none;
   border-radius: 9999px;
   padding: 0.4rem 0.8rem;
   font-weight: bold;
   cursor: pointer;
-  transition: background-color 0.3s ease;
+  transition: background 0.2s;
 }
 
 .available-players li button:hover {
-  background-color: #6E4AFF;
-  color: #FFFFFF;
-}
-
-/* TOP BAR */
-.on-the-clock-bar {
-  width: 100%;
-  background-color: #6E4AFF;
-  color: white;
-  padding: 1rem;
-  border-radius: 10px;
-  margin-bottom: 1rem;
-  text-align: center;
-  font-size: 1.5rem;
-  font-weight: bold;
+  background: #6E4AFF;
+  color: #FFF;
 }

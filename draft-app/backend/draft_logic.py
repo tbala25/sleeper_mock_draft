@@ -10,8 +10,8 @@ warnings.filterwarnings("ignore")
 requests_cache.install_cache('sleeper', expire_after=43200)
 
 # --- CONFIG ---
-league_id        = "1180634108313018368"
-csv_file_path    = "./FantasyPros_2025_Dynasty_OP_Rankings.csv"
+league_id     = "1180634108313018368"
+csv_file_path = "./FantasyPros_2025_Dynasty_OP_Rankings-2.csv"
 
 starter_quality_counts = {'QB': 2, 'RB': 3, 'WR': 4, 'TE': 1}
 depth_counts           = {'QB': 3, 'RB': 4, 'WR': 6, 'TE': 2}
@@ -33,14 +33,12 @@ def standardize_name(name: str) -> str:
 
 def fetch_league_info(league_id: str):
     """Fetch users & rosters once and build mappings."""
-    users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
+    users   = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
     rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters").json()
 
-    # user_id -> display_name
     user_map = {u['user_id']: u['display_name'] for u in users}
 
-    # roster_id -> owner_id, and player_id -> roster_id
-    roster_owner = {}
+    roster_owner     = {}
     player_to_roster = {}
     for r in rosters:
         rid = r['roster_id']
@@ -48,66 +46,58 @@ def fetch_league_info(league_id: str):
         for pid in r.get('players', []):
             player_to_roster[str(pid)] = rid
 
-    # roster_id -> display_name
-    roster_username = {rid: user_map.get(owner, "Unknown") for rid, owner in roster_owner.items()}
+    roster_username = {rid: user_map.get(owner, "Unknown")
+                       for rid, owner in roster_owner.items()}
     return roster_username, player_to_roster
 
 def fetch_players_with_adp():
+    """Fetch all NFL players and merge in ADP from CSV."""
     sleeper = requests.get("https://api.sleeper.app/v1/players/nfl").json()
     adp_df  = pd.read_csv(csv_file_path)
-
-    # normalize and cast ADP
     adp_df['player_key'] = adp_df['PLAYER NAME'].str.strip().str.upper()
     adp_df.rename(columns={'AVG.': 'adp', 'POS': 'position'}, inplace=True)
     adp_df['adp'] = pd.to_numeric(adp_df['adp'], errors='coerce')
 
     rows = []
     for pid, info in sleeper.items():
-        pos = info.get('position')
+        pos  = info.get('position')
         name = info.get('full_name')
         if not pos or not name or pos not in ['QB','RB','WR','TE']:
             continue
-
         key = name.strip().upper()
-        # grab the first matching ADP value (if any)
         adp_match = adp_df.loc[adp_df['player_key'] == key, 'adp']
         adp_val   = float(adp_match.iloc[0]) if not adp_match.empty else None
-
         rows.append({
-            'player_id': pid,
-            'player_name':    key,
-            'position':  pos,
-            'adp':       adp_val
+            'player_id':   pid,
+            'player_name': key,
+            'position':    pos,
+            'adp':         adp_val
         })
-
     return pd.DataFrame(rows)
 
 def build_pick_order(roster_username: dict):
-    drafts = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/drafts").json()
+    drafts   = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/drafts").json()
     draft_id = drafts[0]['draft_id']
-    details = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}").json()
+    details  = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}").json()
 
-    slot_map = details['slot_to_roster_id']    # e.g. {"1": 123, "2": 456, ...}
+    slot_map = details['slot_to_roster_id']
     rounds   = details.get('settings', {}).get('rounds', 4)
     total    = len(slot_map)
 
     pick_to_user = {}
-    # normal picks
     for rnd in range(rounds):
         for slot_str, rid in slot_map.items():
             pick = rnd * total + int(slot_str)
             pick_to_user[pick] = roster_username.get(rid, "Unknown")
 
-    # traded picks override
     traded = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}/traded_picks").json()
-    # build roster_id -> slot index
-    slot_index = {rid: int(slot_str) for slot_str, rid in slot_map.items()}
+    slot_index = {rid: int(slot) for slot, rid in slot_map.items()}
     for t in traded:
         orig_rid = t['roster_id']
         new_rid  = t['owner_id']
-        rnd      = t['round']      # 1‑based
+        rnd      = t['round']      # 1-based
         slot     = slot_index.get(orig_rid)
-        if slot:
+        if slot is not None:
             pick = (rnd - 1) * total + slot
             pick_to_user[pick] = roster_username.get(new_rid, "Unknown")
 
@@ -117,23 +107,19 @@ def calculate_combined_scores(df: pd.DataFrame) -> pd.DataFrame:
     scores = []
     for (user, pos), grp in df.groupby(['username','position']):
         starter = grp.nsmallest(starter_quality_counts.get(pos,0), 'adp')['adp'].mean()
-        depth   = grp.nsmallest(    depth_counts.get(pos,0), 'adp')['adp'].mean()
+        depth   = grp.nsmallest(depth_counts.get(pos,0),       'adp')['adp'].mean()
         scores.append({
-            'username': user,
-            'position': pos,
+            'username':     user,
+            'position':     pos,
             'starter_score': starter,
             'depth_score':   depth
         })
     return pd.DataFrame(scores)
 
-def get_positions_to_improve(players_df):
-    # 1) compute each team’s starter & depth scores
+def get_positions_to_improve(players_df: pd.DataFrame) -> pd.DataFrame:
     combined = calculate_combined_scores(players_df)
-
-    # 2) compute league‑median for each position
     league_avg = (
-        combined
-        .groupby('position')[['starter_score','depth_score']]
+        combined.groupby('position')[['starter_score','depth_score']]
         .median()
         .reset_index()
         .rename(columns={
@@ -141,45 +127,26 @@ def get_positions_to_improve(players_df):
             'depth_score':   'depth_score_league'
         })
     )
+    comp = pd.merge(combined, league_avg, on='position', how='left')
+    comp['improve_starter'] = comp['starter_score'] > comp['starter_score_league']
+    comp['improve_depth']   = comp['depth_score']   > comp['depth_score_league']
+    return comp
 
-    # 3) merge back so each row has both team & league numbers
-    comparison = pd.merge(
-        combined,
-        league_avg,
-        on='position',
-        how='left'
-    )
-
-    # 4) mark who needs improvement
-    comparison['improve_starter'] = (
-        comparison['starter_score'] > comparison['starter_score_league']
-    )
-    comparison['improve_depth'] = (
-        comparison['depth_score'] > comparison['depth_score_league']
-    )
-
-    return comparison
-
-# --- INITIALIZE ---
+# --- INITIALIZE DRAFT ---
 def initialize_draft():
     global team_needs_dict
 
-    # 1) fetch league ⟷ user & roster mappings
     roster_username, player_to_roster = fetch_league_info(league_id)
     draft_state["league_users"] = roster_username
 
-    # 2) fetch full player list + ADP
     players_df = fetch_players_with_adp()
-
-    # 3) attach roster_id → username
+    # attach roster info
     players_df['roster_id'] = players_df['player_id'].map(player_to_roster)
     players_df['username']  = players_df['roster_id'].map(roster_username)
 
-    # 4) calculate needs from rostered players only
+    # compute initial team needs
     rostered = players_df.dropna(subset=['username'])
     needs_df = get_positions_to_improve(rostered)
-
-    # build user → [positions to target]
     team_needs = {}
     for _, row in needs_df.iterrows():
         if row['improve_starter'] or row['improve_depth']:
@@ -187,10 +154,10 @@ def initialize_draft():
     team_needs_dict.clear()
     team_needs_dict.update(team_needs)
 
-    # 5) pick order
+    # build pick order
     draft_state["pick_to_username"] = build_pick_order(roster_username)
 
-    # 6) free-agent pool = everyone NOT on a roster
+    # prepare free-agent list
     free = (
         players_df
         .loc[players_df['roster_id'].isna(), ['player_name','position','adp']]
@@ -199,11 +166,12 @@ def initialize_draft():
     )
     draft_state["available_players"] = free
 
-    # 7) reset picks counter
+    # init picks and counter
     draft_state["picks"] = []
     draft_state["pick_number"] = min(draft_state["pick_to_username"].keys())
 
-    # store final players_df
+    # store master DataFrame, initialize pick_taken
+    players_df['pick_taken'] = pd.NA
     draft_state["players_df"] = players_df
 
 # --- DRAFT ACTIONS ---
@@ -212,15 +180,17 @@ def get_team_on_the_clock():
 
 def pick_player(player_name: str):
     global team_needs_dict
-    player_name = player_name.strip().upper()
+    name = player_name.strip().upper()
+
     for p in draft_state["available_players"]:
-        if p['player_name'] == player_name:
+        if p['player_name'] == name:
             team = get_team_on_the_clock()
+            # record the pick
             draft_state["picks"].append({
                 "pick_number": draft_state["pick_number"],
-                "player": player_name,
-                "position": p['position'],
-                "username": team
+                "player":      name,
+                "position":    p['position'],
+                "username":    team
             })
             # update live needs
             if team in team_needs_dict:
@@ -228,29 +198,109 @@ def pick_player(player_name: str):
                     team_needs_dict[team].remove(p['position'])
                 if not team_needs_dict[team]:
                     team_needs_dict[team] = ["Best Available"]
-
+            # remove from UI pool
             draft_state["available_players"].remove(p)
+            # mark as taken in master DataFrame
+            df = draft_state["players_df"]
+            df.loc[df['player_name'] == name, 'pick_taken'] = draft_state["pick_number"]
+            # advance pick
             draft_state["pick_number"] += 1
             return
-    raise ValueError(f"{player_name} is not available to pick.")
+
+    raise ValueError(f"{name} is not available to pick.")
+
+def find_best_available(draftable_players: pd.DataFrame,
+                        user_needs: pd.DataFrame,
+                        pick_number: int):
+    """
+    draftable_players must have columns:
+      ['player_name','position','adp','pick_taken']
+    user_needs must have ['position','gap'].
+    """
+    # 0) compute ADP threshold
+    best_adp = draftable_players['adp'].min()
+    threshold = best_adp + 15
+
+    # 1) sort needs by gap desc
+    needs_sorted = user_needs.sort_values(by='gap', ascending=False)
+
+    # 2) try each need in order
+    for _, need in needs_sorted.iterrows():
+        pos = need['position']
+
+        # take the top-3 by ADP, **then** limit to threshold
+        top3 = (
+            draftable_players
+            .sort_values('adp')
+            .head(3)
+        )
+        top3 = top3[top3['adp'] <= threshold]
+
+        # now filter to this position and still un-picked
+        candidates = top3[
+            (top3['position'] == pos) &
+            (top3['pick_taken'].isna())
+        ]
+        if not candidates.empty:
+            sel = candidates.iloc[0]
+            draftable_players.at[sel.name, 'pick_taken'] = pick_number
+            return sel['player_name'], pos, sel['adp']
+
+    # 3) fallback: any free agent under the threshold?
+    avail = draftable_players[
+        draftable_players['pick_taken'].isna() &
+        (draftable_players['adp'] <= threshold)
+    ]
+    if not avail.empty:
+        first = avail.sort_values('adp').iloc[0]
+    else:
+        # if none under threshold, just grab the very best remaining
+        first = draftable_players[
+            draftable_players['pick_taken'].isna()
+        ].sort_values('adp').iloc[0]
+
+    draftable_players.at[first.name, 'pick_taken'] = pick_number
+    return first['player_name'], first['position'], first['adp']
 
 def auto_pick_best():
-    """
-    Auto‑pick the available player with the lowest ADP.
-    Any None or non‑finite ADP is treated as +inf, so real ADP values always win.
-    """
-    if not draft_state["available_players"]:
-        raise ValueError("No available players to auto‑pick")
+    """Auto-pick based on team needs (gap prioritization)."""
+    df = draft_state["players_df"]
+    if df.empty:
+        raise ValueError("Draft not initialized yet")
 
-    def adp_key(player):
-        adp = player.get('adp')
-        # if it's a finite number, use it; otherwise push it to the back
-        return adp if isinstance(adp, (int, float)) and isfinite(adp) else float('inf')
+    # filter only true free agents not yet picked
+    draftable = df[
+        df['pick_taken'].isna() &
+        df['roster_id'].isna()
+    ].copy()
+    if draftable.empty:
+        raise ValueError("No free agents left to auto-pick")
 
-    best = min(draft_state["available_players"], key=adp_key)
-    # now delegate into your existing pick logic
-    # NOTE: if your rows now use "player_name" instead of "player", adjust accordingly:
-    pick_player(best['player_name'])
+    # compute gap for each team/position
+    combined = calculate_combined_scores(df.dropna(subset=['username']))
+    league_avg = (
+        combined
+        .groupby('position')[['starter_score','depth_score']]
+        .median()
+        .rename(columns={
+            'starter_score':'starter_league',
+            'depth_score':'depth_league'
+        })
+        .reset_index()
+    )
+    comp = combined.merge(league_avg, on='position')
+    comp['gap'] = (
+        (comp['starter_league'] - comp['starter_score']).abs() +
+        (comp['depth_league']   - comp['depth_score']).abs()
+    )
+    current    = get_team_on_the_clock()
+    user_needs = comp[comp['username'] == current][['position','gap']]
+
+    # pick and delegate
+    player_name, _, _ = find_best_available(
+        draftable, user_needs, draft_state["pick_number"]
+    )
+    pick_player(player_name)
 
 def reset_draft():
     initialize_draft()
@@ -261,9 +311,9 @@ def get_draft_state():
         "available_players": draft_state["available_players"],
         "on_the_clock": {
             "pick_number": draft_state["pick_number"],
-            "team_name": get_team_on_the_clock(),
-            "team_needs": team_needs_dict.get(get_team_on_the_clock(), ["Best Available"])
+            "team_name":   get_team_on_the_clock(),
+            "team_needs":  team_needs_dict.get(get_team_on_the_clock(), ["Best Available"])
         },
         "pick_to_username": draft_state["pick_to_username"],
-        "team_needs": team_needs_dict
+        "team_needs":       team_needs_dict
     }

@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react'
-import './App.css'
+import React, { useState, useEffect, useRef } from 'react';
+import './App.css';
 
 function App() {
   const [draftState, setDraftState] = useState(null);
@@ -28,7 +28,7 @@ function App() {
     await fetch('http://127.0.0.1:8000/draft/pick-player', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ player_name: playerName })
+      body: JSON.stringify({ player_name: playerName }),
     });
     await fetchDraftState();
   };
@@ -38,76 +38,97 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Auto-scroll the pick list to current pick
     if (pickListRef.current && draftState) {
-      const activePick = pickListRef.current.querySelector('.pick.on-the-clock');
-      if (activePick) {
-        activePick.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      const el = pickListRef.current.querySelector('.pick.on-the-clock');
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [draftState]);
 
-  if (!draftState) return <div>Loading draft...</div>;
+  if (!draftState) return <div className="loading">Loading draft...</div>;
 
-  const { picks, available_players, on_the_clock, pick_to_username, team_needs } = draftState;
+  const {
+    picks,
+    available_players,
+    on_the_clock: otc,
+    pick_to_username,
+    team_needs,
+  } = draftState;
 
-  const getPickContent = (pickNumber) => {
-    const pick = picks.find(p => p.pick_number === pickNumber);
-    const username = pick_to_username[pickNumber] || "Unknown";
-    const needs = team_needs[username] || ["Best Available"];
+  const getPickContent = (numStr) => {
+    const num = Number(numStr);
+    const pick = picks.find(p => p.pick_number === num);
+    const user = pick_to_username[numStr] || 'Unknown';
+    const needs = team_needs[user] || ['Best Available'];
 
-    if (pick) {
-      return `${pick.username}: ${pick.player} (${pick.position})`;
-    } else {
-      return `${username} - Needs: ${needs.join(', ')}`;
-    }
+    return pick
+      ? `${pick.username}: ${pick.player} (${pick.position})`
+      : `${user} – Needs: ${needs.join(', ')}`;
   };
 
   return (
-    <div className="container">
-      <h1>🏈 Fantasy Draft Board</h1>
+    <div className="App">
+      <header className="app-header">
+        <div className="header-left">
+          <span className="logo">🏈</span>
+          <h1 className="title">Fantasy Draft Board</h1>
+        </div>
+        <div className="header-search">
+          <input type="text" placeholder="Search players or teams…" />
+          <span className="search-icon">🔍</span>
+        </div>
+      </header>
 
       <div className="on-the-clock-bar">
-        Pick {on_the_clock.pick_number} - {on_the_clock.team_name} <br />
-        Needs: {on_the_clock.team_needs.join(', ')}
+        Pick {otc.pick_number} – {otc.team_name}
+        <br />
+        Needs: {otc.team_needs.join(', ')}
       </div>
 
       <div className="controls">
         <button onClick={makeNextPick} disabled={loadingPick}>
-          {loadingPick ? 'Picking...' : 'Auto Pick Best Player'}
+          {loadingPick ? 'Picking…' : 'Auto Pick Best Player'}
         </button>
-        <button onClick={resetDraft}>
-          Reset Draft
-        </button>
+        <button onClick={resetDraft}>Reset Draft</button>
       </div>
 
       <div className="layout">
-        {/* LEFT SIDE: Picks */}
+        {/* LEFT COLUMN */}
         <div className="draft-picks" ref={pickListRef}>
           {Object.keys(pick_to_username)
             .sort((a, b) => Number(a) - Number(b))
-            .map((pickNum) => (
-              <div
-                key={pickNum}
-                className={`pick ${parseInt(pickNum) === on_the_clock.pick_number ? 'on-the-clock' : ''}`}
-              >
-                <div className="pick-main">Pick {pickNum}</div>
-                <div className="needs-text">{getPickContent(Number(pickNum))}</div>
-              </div>
-          ))}
+            .map(numStr => {
+              const num = Number(numStr);
+              const isClock = num === otc.pick_number;
+              const pick = picks.find(p => p.pick_number === num);
+              const posClass = pick ? pick.position.toLowerCase() : '';
+              return (
+                <div
+                  key={numStr}
+                  className={`pick ${posClass}${isClock ? ' on-the-clock' : ''}`}
+                >
+                  <div className="pick-main">Pick {num}</div>
+                  <div className="needs-text">{getPickContent(numStr)}</div>
+                </div>
+              );
+            })}
         </div>
 
-        {/* RIGHT SIDE: Available Players */}
+        {/* RIGHT COLUMN */}
         <div className="available-players">
           <h2>Available Players</h2>
           <ul>
             {available_players
               .sort((a, b) => (a.adp || 9999) - (b.adp || 9999))
-              .slice(0, 20)
-              .map((player, idx) => (
-                <li key={idx}>
-                  {player.player_name} {player.position} (ADP: {player.adp})
-                  <button onClick={() => pickPlayer(player.player_name)}>Pick</button>
+              .map((p, i) => (
+                <li
+                  key={i}
+                  className={p.position.toLowerCase()}
+                  onClick={() => pickPlayer(p.player_name)}
+                >
+                  <span>
+                    {p.player_name} {p.position} (ADP: {p.adp})
+                  </span>
+                  <button>Pick</button>
                 </li>
               ))}
           </ul>
